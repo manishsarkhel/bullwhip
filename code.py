@@ -6,15 +6,40 @@ import random
 # --- Game Configuration ---
 TOTAL_ROUNDS = 20
 INITIAL_INVENTORY = 50
-HOLDING_COST = 2.0    # Increased holding cost
+HOLDING_COST = 2.0    # Punishing holding cost
 BACKORDER_COST = 5.0  # Punishing backorder cost
 LEAD_TIME = 3         # 3-week lead time makes forecasting very difficult
 
-# Tough Demand Scenario: Noise, a sudden spike, a sudden drop, and another spike.
-DEMAND_SCENARIO = [12, 15, 11, 14, 13,   # Weeks 1-5: Stable but noisy
-                   38, 35, 32, 39, 34,   # Weeks 6-10: Massive unexpected spike
-                   12, 10, 14, 11, 15,   # Weeks 11-15: Sudden drop back to normal
-                   35, 32, 38, 31, 35]   # Weeks 16-20: Second spike
+def generate_random_demand(total_weeks):
+    """
+    Generates demand using a random normal distribution for baseline noise,
+    and injects deliberate spikes at specific weeks.
+    """
+    demand = []
+    baseline_mean = 15
+    baseline_std_dev = 3
+    
+    # Define which weeks will have massive demand spikes
+    spike_weeks = {
+        6: 45,  # Week 6 spike
+        12: 10, # Week 12 sudden drop
+        17: 50  # Week 17 massive spike
+    }
+    
+    for week in range(1, total_weeks + 1):
+        if week in spike_weeks:
+            # Inject the specific spike/drop
+            demand.append(spike_weeks[week])
+        else:
+            # Generate noisy baseline demand (ensuring it doesn't drop below 0)
+            random_val = int(random.gauss(baseline_mean, baseline_std_dev))
+            demand.append(max(0, random_val))
+            
+    return demand
+
+# Generate the demand scenario for this session
+if 'demand_scenario' not in st.session_state:
+    st.session_state.demand_scenario = generate_random_demand(TOTAL_ROUNDS)
 
 def initialize_game():
     """Initializes the session state variables for a new game."""
@@ -22,7 +47,8 @@ def initialize_game():
     st.session_state.inventory = INITIAL_INVENTORY
     st.session_state.backorders = 0
     st.session_state.total_cost = 0.0
-    st.session_state.order_pipeline = [12, 12, 12] # Pipeline matched to lead time
+    st.session_state.order_pipeline = [15, 15, 15] # Pipeline matched to lead time and average demand
+    st.session_state.demand_scenario = generate_random_demand(TOTAL_ROUNDS) # Generate new demand on restart
     
     st.session_state.history = {
         'Week': [],
@@ -35,12 +61,12 @@ def initialize_game():
     st.session_state.game_over = False
 
 # --- App Layout & Logic ---
-st.set_page_config(page_title="Tough Bullwhip Simulator", layout="wide")
+st.set_page_config(page_title="Advanced Bullwhip Simulator", layout="wide")
 
-st.title("🌪️ The Advanced Bullwhip Simulator")
+st.title("🌪️ The Advanced Bullwhip Simulator (Randomized Demand)")
 st.markdown("""
 **Role:** Wholesaler | **Objective:** Minimize total costs over 20 weeks.  
-**Warning: This scenario is highly volatile.**
+**Warning: Demand is randomly generated with hidden market shocks.**
 * **Lead Time:** Orders take **3 WEEKS** to arrive.
 * **Holding Cost:** $2.00 per unit left in inventory.
 * **Backorder Cost:** $5.00 per unit of missed demand (Ouch!).
@@ -64,8 +90,7 @@ def plot_live_history(df):
     ax1.set_ylabel('Units')
     ax1.set_title('Live Supply Chain Metrics')
     ax1.set_xlim(1, TOTAL_ROUNDS)
-    # Give a bit of headroom on the y-axis
-    max_y = max([50] + df['Demand'].tolist() + df['Player_Orders'].tolist() + df['Inventory'].tolist()) if not df.empty else 50
+    max_y = max([60] + df['Demand'].tolist() + df['Player_Orders'].tolist() + df['Inventory'].tolist()) if not df.empty else 60
     ax1.set_ylim(0, max_y + 10)
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3)
@@ -83,23 +108,23 @@ if st.session_state.game_over:
     
     st.markdown("### Post-Mortem Analysis")
     if bwe_index > 1.2:
-        st.error(f"**Severe Bullwhip Effect Detected!** Your order variance was {bwe_index:.2f}x higher than the actual demand variance. The 3-week delay and punishing stockout costs likely caused you to panic order.")
+        st.error(f"**Severe Bullwhip Effect Detected!** Your order variance was {bwe_index:.2f}x higher than the actual demand variance. The unpredictable demand shocks caused you to over-correct.")
     else:
-        st.success(f"**Master Planner!** You managed the turbulence brilliantly. Your order variance remained stable (Ratio: {bwe_index:.2f}).")
+        st.success(f"**Master Planner!** You managed the randomized turbulence brilliantly. Your order variance remained stable (Ratio: {bwe_index:.2f}).")
 
     st.pyplot(plot_live_history(df))
     
     with st.expander("View Raw Data"):
         st.dataframe(df.set_index('Week'))
     
-    if st.button("Restart Simulation"):
+    if st.button("Restart Simulation (New Demand Scenario)"):
         initialize_game()
         st.rerun()
 
 # --- Main Game Dashboard ---
 else:
     current_week = st.session_state.round
-    current_demand = DEMAND_SCENARIO[current_week - 1]
+    current_demand = st.session_state.demand_scenario[current_week - 1]
     incoming_delivery = st.session_state.order_pipeline[0]
     
     # Render the Live Dashboard
@@ -136,13 +161,9 @@ else:
             submitted = st.form_submit_button("Place Order & Advance Week ➡️")
             
             if submitted:
-                # 1. Process incoming delivery
                 received = st.session_state.order_pipeline.pop(0)
-                
-                # 2. Add new order to the end of the pipeline
                 st.session_state.order_pipeline.append(order_amount)
                 
-                # 3. Calculate new inventory and backorders
                 net_inventory = st.session_state.inventory - st.session_state.backorders + received
                 new_net_inventory = net_inventory - current_demand
                 
@@ -153,18 +174,15 @@ else:
                     new_inventory = 0
                     new_backorders = abs(new_net_inventory)
                     
-                # 4. Calculate costs
                 cost_this_week = (new_inventory * HOLDING_COST) + (new_backorders * BACKORDER_COST)
                 
-                # 5. Save History for the plot
                 st.session_state.history['Week'].append(current_week)
                 st.session_state.history['Demand'].append(current_demand)
                 st.session_state.history['Player_Orders'].append(order_amount)
-                st.session_state.history['Inventory'].append(st.session_state.inventory) # Record start-of-week inventory
+                st.session_state.history['Inventory'].append(st.session_state.inventory)
                 st.session_state.history['Backorders'].append(st.session_state.backorders)
                 st.session_state.history['Cost_This_Week'].append(cost_this_week)
                 
-                # 6. Update State
                 st.session_state.inventory = new_inventory
                 st.session_state.backorders = new_backorders
                 st.session_state.total_cost += cost_this_week
